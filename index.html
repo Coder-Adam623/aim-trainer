@@ -18,6 +18,7 @@
 let rect;
 let score = 0;
 let scoreText;
+let debugMode = false;
 let debugGraphics;
 
 let levelTextBG;
@@ -165,7 +166,6 @@ const config = {
     scene: { preload, create, update }
 };
 
-new Phaser.Game(config);
 
 function preload() {
     this.load.image("whiteRect", "assets/white.png");
@@ -254,8 +254,10 @@ function create() {
     scoreText.setDepth(9999);
     scoreText.setVisible(false);
 
-    debugGraphics = this.add.graphics();
-    debugGraphics.setDepth(9999);
+    if (debugMode == true){
+        debugGraphics = this.add.graphics();
+        debugGraphics.setDepth(9999);
+    }
 
     // RAW 1:1 MOUSE MOVEMENT
     this.input.on("pointermove", (pointer) => {
@@ -332,11 +334,11 @@ function update() {
         4,
         4
     );
-
-    debugGraphics.clear();
-    debugGraphics.lineStyle(1, 0x00ff00);
-    debugGraphics.strokeRect(cursorHitbox.x, cursorHitbox.y, cursorHitbox.width, cursorHitbox.height);
-
+    if (debugMode == true){
+        debugGraphics.clear();
+        debugGraphics.lineStyle(1, 0x00ff00);
+        debugGraphics.strokeRect(cursorHitbox.x, cursorHitbox.y, cursorHitbox.width, cursorHitbox.height);
+    }
     const dt = this.game.loop.delta;
     activeTargets.forEach(t => {
         if (t.movementModules) {

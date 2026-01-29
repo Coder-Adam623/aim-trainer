@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Phaser Target Game</title>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.js"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #111;
+        }
+    </style>
+</head>
+<body>
+
+<script>
+let rect;
+let velX = 0;
+let velY = 0;
+let score = 0;
+let scoreText;
+let debugGraphics;
+
+let levelTextBG;
+let goalText;
+
+let gameOver = false;
+
+let activeTargets = [];
+let spawnTimer = null;
+
+// -------------------------
+// MOVEMENT SYSTEM
+// -------------------------
+const Movement = {
+    linear(target, scene, config) {
+        // NEW: multi-path support
+        const path = Phaser.Utils.Array.GetRandom(config.paths);
+
+        const data = {
+            p1: path.p1,
+            p2: path.p2,
+            duration: path.time * 1000, // seconds → ms
+            t: 0,
+            dir: 1
+        };
+
+        target.movementModules.push((dt) => {
+            data.t += data.dir * dt;
+
+            if (data.t >= data.duration) {
+                data.t = data.duration;
+                data.dir = -1;
+            }
+            if (data.t <= 0) {
+                data.t = 0;
+                data.dir = 1;
+            }
+
+            const ratio = data.t / data.duration;
+
+            target.x = Phaser.Math.Linear(data.p1.x, data.p2.x, ratio);
+            target.y = Phaser.Math.Linear(data.p1.y, data.p2.y, ratio);
+        });
+    },
+
+    jitter(target, scene, config) {
+        const { intensity = 3, speed = 0.02 } = config;
+
+        const data = {
+            time: 0,
+            intensity,
+            speed
+        };
+
+        target.movementModules.push((dt) => {
+            data.time += dt * data.speed;
+
+            const jx = Math.sin(data.time * 13.37) * data.intensity;
+            const jy = Math.cos(data.time * 9.42) * data.intensity;
+
+            target.x += jx;
+            target.y += jy;
+        });
+    }
+};
+
+// -------------------------
+// LEVEL SYSTEM
+// -------------------------
+const levels = {
+    level1: {
+        name: "Warmup",
+        goal: 5,
+        next: "level2",
+        scoreDelta: 1,
+        movement: null,
+        assets: ["redRect"],
+        allowMultiple: null
+    },
+
+    level2: {
+        name: "Speed Up",
+        goal: 10,
+        next: "level3",
+        scoreDelta: 1,
+        movement: [
+            {
+                type: "jitter",
+                intensity: 2,
+                speed: 0.015
+            }
+        ],
+        assets: ["redRect"],
+        allowMultiple: {
+            maxAmount: 2,
+            interval: 1200
+        }
+    },
+
+    level3: {
+        name: "Precision",
+        goal: 15,
+        next: null,
+        scoreDelta: 2,
+        movement: [
+            {
+                type: "linear",
+                paths: [
+                    { p1:{x:200,y:200}, p2:{x:800,y:600}, time:3 },
+                    { p1:{x:150,y:450}, p2:{x:900,y:300}, time:2.5 },
+                    { p1:{x:300,y:300}, p2:{x:850,y:500}, time:4 }
+                ]
+            },
+        ],
+        cooldown: 5,
+        assets: ["redRect"],
+        allowMultiple: {
+            maxAmount: 3,
+            interval: 1000
+        }
+    }
+};
+
+let currentLevelKey = "level1";
+let currentLevel = levels[currentLevelKey];
+
+// -------------------------
+
+const config = {
+    type: Phaser.AUTO,
+    width: window.innerWidth,
+    height: window.innerHeight,
+    backgroundColor: "#222",
+    scale: {
+        mode: Phaser.Scale.RESIZE,
+        autoCenter: Phaser.Scale.CENTER_BOTH
+    },
+    scene: { preload, create, update }
+};
+
+new Phaser.Game(config);
+
+function preload() {
+    this.load.image("whiteRect", "assets/white.png");
+    this.load.image("redRect", "assets/red.png");
+}
+
+function create() {
+    const w = this.scale.width;
+    const h = this.scale.height;
+
+    // Background level text
+    levelTextBG = this.add.text(
+        w / 2,
+        h / 2,
+        formatLevelText(),
+        {
+            fontSize: "120px",
+            color: "#555",
+            fontStyle: "bold",
+            align: "center"
+        }
+    );
+    levelTextBG.setOrigin(0.5);
+    levelTextBG.setAlpha(0.15);
+    levelTextBG.setDepth(0);
+
+    // Goal text
+    goalText = this.add.text(
+        w - 40,
+        20,
+        "🏁 Goal: " + currentLevel.goal,
+        {
+            fontSize: "32px",
+            color: "#ffffff"
+        }
+    );
+    goalText.setOrigin(1, 0);
+    goalText.setDepth(9999);
+
+    // Cursor
+    rect = this.add.image(w / 2, h / 2, "whiteRect");
+    rect.setScale(0.084);
+    rect.setDepth(9999);
+
+    // Score
+    scoreText = this.add.text(20, 20, "Score: 0", {
+        fontSize: "32px",
+        color: "#ffffff"
+    });
+    scoreText.setDepth(9999);
+
+    debugGraphics = this.add.graphics();
+    debugGraphics.setDepth(9999);
+
+    setupSpawning(this);
+
+    // Pointer lock + hit detection
+    this.input.on("pointerdown", () => {
+        if (!this.input.mouse.locked && !gameOver) {
+            this.input.mouse.requestPointerLock();
+            return;
+        }
+
+        if (gameOver) return;
+
+        const cursorHitbox = new Phaser.Geom.Rectangle(
+            rect.x - 2,
+            rect.y - 2,
+            4,
+            4
+        );
+
+        // Check all active targets
+        for (let i = activeTargets.length - 1; i >= 0; i--) {
+            const t = activeTargets[i];
+            const targetHitbox = t.getBounds();
+
+            const hit = Phaser.Geom.Intersects.RectangleToRectangle(
+                cursorHitbox,
+                targetHitbox
+            );
+
+            if (hit) {
+                t.destroy();
+                activeTargets.splice(i, 1);
+
+                score += currentLevel.scoreDelta || 1;
+                scoreText.setText("Score: " + score);
+
+                if (!currentLevel.allowMultiple && !gameOver) {
+                    spawnTarget(this);
+                }
+
+                checkLevelProgress(this);
+                break;
+            }
+        }
+    });
+
+    // Mouse movement
+    this.input.on("pointermove", (pointer) => {
+        if (this.input.mouse.locked && !gameOver) {
+            velX += pointer.movementX;
+            velY += pointer.movementY;
+        }
+    });
+
+    // ESC unlock
+    this.input.keyboard.on("keydown-ESC", () => {
+        if (this.input.mouse.locked) {
+            this.input.mouse.releasePointerLock();
+        }
+    });
+}
+
+function update() {
+    if (gameOver) return;
+
+    const w = this.scale.width;
+    const h = this.scale.height;
+
+    rect.x += velX * 0.1;
+    rect.y += velY * 0.1;
+
+    velX *= 0.9;
+    velY *= 0.9;
+
+    if (rect.x < 0) rect.x = w;
+    if (rect.x > w) rect.x = 0;
+    if (rect.y < 0) rect.y = h;
+    if (rect.y > h) rect.y = 0;
+
+    const cursorHitbox = new Phaser.Geom.Rectangle(
+        rect.x - 2,
+        rect.y - 2,
+        4,
+        4
+    );
+
+    debugGraphics.clear();
+    debugGraphics.lineStyle(1, 0x00ff00);
+    debugGraphics.strokeRect(cursorHitbox.x, cursorHitbox.y, cursorHitbox.width, cursorHitbox.height);
+
+    // Update movement modules for all targets
+    const dt = this.game.loop.delta;
+    activeTargets.forEach(t => {
+        if (t.movementModules) {
+            t.movementModules.forEach(fn => fn(dt));
+        }
+    });
+}
+
+// -------------------------
+// SPAWNING SYSTEM
+// -------------------------
+function setupSpawning(scene) {
+    if (spawnTimer) {
+        spawnTimer.remove(false);
+        spawnTimer = null;
+    }
+    activeTargets.forEach(t => t.destroy());
+    activeTargets = [];
+
+    const multi = currentLevel.allowMultiple;
+
+    if (multi) {
+        spawnTarget(scene);
+
+        spawnTimer = scene.time.addEvent({
+            delay: multi.interval,
+            loop: true,
+            callback: () => {
+                if (gameOver) return;
+                if (activeTargets.length < multi.maxAmount) {
+                    spawnTarget(scene);
+                }
+            }
+        });
+    } else {
+        spawnTarget(scene);
+    }
+}
+
+function spawnTarget(scene) {
+    if (gameOver) return null;
+
+    const w = scene.scale.width;
+    const h = scene.scale.height;
+
+    const margin = 100;
+
+    const x = Phaser.Math.Between(margin, w - margin);
+    const y = Phaser.Math.Between(margin, h - margin);
+
+    const assetPool = currentLevel.assets || ["redRect"];
+    const chosenAsset = Phaser.Utils.Array.GetRandom(assetPool);
+
+    const t = scene.add.image(x, y, chosenAsset);
+    t.setScale(0.02);
+    t.setDepth(1);
+
+    t.movementModules = [];
+
+    if (currentLevel.movement) {
+        const movements = Array.isArray(currentLevel.movement)
+            ? currentLevel.movement
+            : [currentLevel.movement];
+
+        movements.forEach(m => {
+            Movement[m.type](t, scene, m);
+        });
+    }
+
+    activeTargets.push(t);
+
+    let cd = (currentLevel.cooldown ?? 3) * 1000
+
+    scene.time.delayedCall(cd, () => {
+        if (!gameOver && t.active) {
+            t.destroy();
+            const idx = activeTargets.indexOf(t);
+            if (idx !== -1) activeTargets.splice(idx, 1);
+
+            score -= currentLevel.scoreDelta || 1;
+            scoreText.setText("Score: " + score);
+
+            if (!currentLevel.allowMultiple && !gameOver) {
+                spawnTarget(scene);
+            }
+        }
+    });
+
+    return t;
+}
+
+// -------------------------
+// LEVEL PROGRESSION
+// -------------------------
+function checkLevelProgress(scene) {
+    if (score >= currentLevel.goal) {
+        if (currentLevel.next) {
+            currentLevelKey = currentLevel.next;
+            currentLevel = levels[currentLevelKey];
+
+            score = 0;
+            scoreText.setText("Score: 0");
+
+            levelTextBG.setText(formatLevelText());
+            goalText.setText("🏁 Goal: " + currentLevel.goal);
+
+            const msg = scene.add.text(
+                scene.scale.width / 2,
+                80,
+                "LEVEL UP: " + currentLevel.name,
+                { fontSize: "48px", color: "#00ff00" }
+            );
+            msg.setOrigin(0.5).setDepth(9999);
+
+            scene.time.delayedCall(1500, () => msg.destroy());
+
+            setupSpawning(scene);
+        } else {
+            showEndScreen(scene);
+        }
+    }
+}
+
+function formatLevelText() {
+    const num = currentLevelKey.replace("level", "");
+    return `${num}: ${currentLevel.name}`;
+}
+
+// -------------------------
+// END SCREEN
+// -------------------------
+function showEndScreen(scene) {
+    gameOver = true;
+
+    if (spawnTimer) {
+        spawnTimer.remove(false);
+        spawnTimer = null;
+    }
+
+    activeTargets.forEach(t => t.destroy());
+    activeTargets = [];
+
+    if (scene.input.mouse.locked) {
+        scene.input.mouse.releasePointerLock();
+    }
+
+    const endText = scene.add.text(
+        scene.scale.width / 2,
+        scene.scale.height / 2 - 40,
+        "🏆 TRAINING COMPLETE 🏆",
+        {
+            fontSize: "72px",
+            color: "#ffffff",
+            fontStyle: "bold"
+        }
+    );
+    endText.setOrigin(0.5).setDepth(99999);
+
+    const finalScore = scene.add.text(
+        scene.scale.width / 2,
+        scene.scale.height / 2 + 40,
+        "Final Level: " + currentLevel.name,
+        {
+            fontSize: "40px",
+            color: "#cccccc"
+        }
+    );
+    finalScore.setOrigin(0.5).setDepth(99999);
+}
+
+</script>
+
+</body>
+</html>

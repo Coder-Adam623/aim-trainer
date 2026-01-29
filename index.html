@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Phaser Target Game</title>
+    <title>Phaser Aim Trainer</title>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.js"></script>
     <style>
         body {
@@ -10,26 +10,12 @@
             overflow: hidden;
             background: #111;
         }
-        .menu-button {
-            padding: 14px 28px;
-            background: #00cc66;
-            color: white;
-            font-size: 24px;
-            border-radius: 8px;
-            cursor: pointer;
-            user-select: none;
-        }
-        .menu-button:hover {
-            background: #00aa55;
-        }
     </style>
 </head>
 <body>
 
 <script>
 let rect;
-let velX = 0;
-let velY = 0;
 let score = 0;
 let scoreText;
 let debugGraphics;
@@ -73,7 +59,7 @@ const Movement = {
             const ratio = data.t / data.duration;
 
             target.x = Phaser.Math.Linear(data.p1.x, data.p2.x, ratio);
-            target.y = Phaser.Math.Linear(data.p2.y, data.p1.y, 1 - ratio);
+            target.y = Phaser.Math.Linear(data.p1.y, data.p2.y, ratio);
         });
     },
 
@@ -226,7 +212,7 @@ function create() {
 
     this.menuContainer.add([title, desc, playButton]);
 
-    // GAME UI (hidden until play)
+    // GAME UI
     levelTextBG = this.add.text(
         w / 2,
         h / 2,
@@ -271,7 +257,15 @@ function create() {
     debugGraphics = this.add.graphics();
     debugGraphics.setDepth(9999);
 
-    // Pointer lock only after menu
+    // RAW 1:1 MOUSE MOVEMENT
+    this.input.on("pointermove", (pointer) => {
+        if (!this.input.mouse.locked || inMenu || gameOver) return;
+
+        rect.x += pointer.movementX;
+        rect.y += pointer.movementY;
+    });
+
+    // SHOOTING
     this.input.on("pointerdown", () => {
         if (inMenu || gameOver) return;
 
@@ -308,12 +302,6 @@ function create() {
         }
     });
 
-    this.input.on("pointermove", (pointer) => {
-        if (!this.input.mouse.locked || inMenu || gameOver) return;
-        velX += pointer.movementX;
-        velY += pointer.movementY;
-    });
-
     this.input.keyboard.on("keydown-ESC", () => {
         if (this.input.mouse.locked) {
             this.input.mouse.releasePointerLock();
@@ -324,20 +312,15 @@ function create() {
 function update() {
     if (inMenu || gameOver) return;
 
-    const w = this.scale.width;
-    const h = this.scale.height;
-
     rect.setVisible(true);
     scoreText.setVisible(true);
     goalText.setVisible(true);
     levelTextBG.setVisible(true);
 
-    rect.x += velX * 0.1;
-    rect.y += velY * 0.1;
+    const w = this.scale.width;
+    const h = this.scale.height;
 
-    velX *= 0.9;
-    velY *= 0.9;
-
+    // wrap
     if (rect.x < 0) rect.x = w;
     if (rect.x > w) rect.x = 0;
     if (rect.y < 0) rect.y = h;

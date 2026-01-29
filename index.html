@@ -10,6 +10,18 @@
             overflow: hidden;
             background: #111;
         }
+        .menu-button {
+            padding: 14px 28px;
+            background: #00cc66;
+            color: white;
+            font-size: 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .menu-button:hover {
+            background: #00aa55;
+        }
     </style>
 </head>
 <body>
@@ -26,6 +38,7 @@ let levelTextBG;
 let goalText;
 
 let gameOver = false;
+let inMenu = true;
 
 let activeTargets = [];
 let spawnTimer = null;
@@ -35,13 +48,12 @@ let spawnTimer = null;
 // -------------------------
 const Movement = {
     linear(target, scene, config) {
-        // NEW: multi-path support
         const path = Phaser.Utils.Array.GetRandom(config.paths);
 
         const data = {
             p1: path.p1,
             p2: path.p2,
-            duration: path.time * 1000, // seconds → ms
+            duration: path.time * 1000,
             t: 0,
             dir: 1
         };
@@ -61,7 +73,7 @@ const Movement = {
             const ratio = data.t / data.duration;
 
             target.x = Phaser.Math.Linear(data.p1.x, data.p2.x, ratio);
-            target.y = Phaser.Math.Linear(data.p1.y, data.p2.y, ratio);
+            target.y = Phaser.Math.Linear(data.p2.y, data.p1.y, 1 - ratio);
         });
     },
 
@@ -95,6 +107,7 @@ const levels = {
         goal: 5,
         next: "level2",
         scoreDelta: 1,
+        cooldown: 3,
         movement: null,
         assets: ["redRect"],
         allowMultiple: null
@@ -105,6 +118,7 @@ const levels = {
         goal: 10,
         next: "level3",
         scoreDelta: 1,
+        cooldown: 2.5,
         movement: [
             {
                 type: "jitter",
@@ -124,6 +138,7 @@ const levels = {
         goal: 15,
         next: null,
         scoreDelta: 2,
+        cooldown: 2,
         movement: [
             {
                 type: "linear",
@@ -133,8 +148,12 @@ const levels = {
                     { p1:{x:300,y:300}, p2:{x:850,y:500}, time:4 }
                 ]
             },
+            {
+                type: "jitter",
+                intensity: 3,
+                speed: 0.02
+            }
         ],
-        cooldown: 5,
         assets: ["redRect"],
         allowMultiple: {
             maxAmount: 3,
@@ -171,7 +190,43 @@ function create() {
     const w = this.scale.width;
     const h = this.scale.height;
 
-    // Background level text
+    // MENU SCREEN
+    this.menuContainer = this.add.container(w / 2, h / 2);
+
+    const title = this.add.text(0, -120, "AIM TRAINER", {
+        fontSize: "72px",
+        color: "#ffffff",
+        fontStyle: "bold"
+    }).setOrigin(0.5);
+
+    const desc = this.add.text(0, -20,
+        "Click PLAY to begin.\nShoot targets before they disappear.\nEach level gets harder.",
+        {
+            fontSize: "28px",
+            color: "#cccccc",
+            align: "center"
+        }
+    ).setOrigin(0.5);
+
+    const playButton = this.add.text(0, 140, "PLAY", {
+        fontSize: "48px",
+        color: "#00ff88",
+        fontStyle: "bold",
+        backgroundColor: "#003322",
+        padding: { left: 20, right: 20, top: 10, bottom: 10 }
+    })
+    .setOrigin(0.5)
+    .setInteractive({ useHandCursor: true });
+
+    playButton.on("pointerdown", () => {
+        this.menuContainer.setVisible(false);
+        inMenu = false;
+        setupSpawning(this);
+    });
+
+    this.menuContainer.add([title, desc, playButton]);
+
+    // GAME UI (hidden until play)
     levelTextBG = this.add.text(
         w / 2,
         h / 2,
@@ -186,8 +241,8 @@ function create() {
     levelTextBG.setOrigin(0.5);
     levelTextBG.setAlpha(0.15);
     levelTextBG.setDepth(0);
+    levelTextBG.setVisible(false);
 
-    // Goal text
     goalText = this.add.text(
         w - 40,
         20,
@@ -199,32 +254,31 @@ function create() {
     );
     goalText.setOrigin(1, 0);
     goalText.setDepth(9999);
+    goalText.setVisible(false);
 
-    // Cursor
     rect = this.add.image(w / 2, h / 2, "whiteRect");
     rect.setScale(0.084);
     rect.setDepth(9999);
+    rect.setVisible(false);
 
-    // Score
     scoreText = this.add.text(20, 20, "Score: 0", {
         fontSize: "32px",
         color: "#ffffff"
     });
     scoreText.setDepth(9999);
+    scoreText.setVisible(false);
 
     debugGraphics = this.add.graphics();
     debugGraphics.setDepth(9999);
 
-    setupSpawning(this);
-
-    // Pointer lock + hit detection
+    // Pointer lock only after menu
     this.input.on("pointerdown", () => {
-        if (!this.input.mouse.locked && !gameOver) {
+        if (inMenu || gameOver) return;
+
+        if (!this.input.mouse.locked) {
             this.input.mouse.requestPointerLock();
             return;
         }
-
-        if (gameOver) return;
 
         const cursorHitbox = new Phaser.Geom.Rectangle(
             rect.x - 2,
@@ -233,17 +287,11 @@ function create() {
             4
         );
 
-        // Check all active targets
         for (let i = activeTargets.length - 1; i >= 0; i--) {
             const t = activeTargets[i];
             const targetHitbox = t.getBounds();
 
-            const hit = Phaser.Geom.Intersects.RectangleToRectangle(
-                cursorHitbox,
-                targetHitbox
-            );
-
-            if (hit) {
+            if (Phaser.Geom.Intersects.RectangleToRectangle(cursorHitbox, targetHitbox)) {
                 t.destroy();
                 activeTargets.splice(i, 1);
 
@@ -260,15 +308,12 @@ function create() {
         }
     });
 
-    // Mouse movement
     this.input.on("pointermove", (pointer) => {
-        if (this.input.mouse.locked && !gameOver) {
-            velX += pointer.movementX;
-            velY += pointer.movementY;
-        }
+        if (!this.input.mouse.locked || inMenu || gameOver) return;
+        velX += pointer.movementX;
+        velY += pointer.movementY;
     });
 
-    // ESC unlock
     this.input.keyboard.on("keydown-ESC", () => {
         if (this.input.mouse.locked) {
             this.input.mouse.releasePointerLock();
@@ -277,10 +322,15 @@ function create() {
 }
 
 function update() {
-    if (gameOver) return;
+    if (inMenu || gameOver) return;
 
     const w = this.scale.width;
     const h = this.scale.height;
+
+    rect.setVisible(true);
+    scoreText.setVisible(true);
+    goalText.setVisible(true);
+    levelTextBG.setVisible(true);
 
     rect.x += velX * 0.1;
     rect.y += velY * 0.1;
@@ -304,7 +354,6 @@ function update() {
     debugGraphics.lineStyle(1, 0x00ff00);
     debugGraphics.strokeRect(cursorHitbox.x, cursorHitbox.y, cursorHitbox.width, cursorHitbox.height);
 
-    // Update movement modules for all targets
     const dt = this.game.loop.delta;
     activeTargets.forEach(t => {
         if (t.movementModules) {
@@ -345,7 +394,7 @@ function setupSpawning(scene) {
 }
 
 function spawnTarget(scene) {
-    if (gameOver) return null;
+    if (gameOver || inMenu) return null;
 
     const w = scene.scale.width;
     const h = scene.scale.height;
@@ -376,7 +425,7 @@ function spawnTarget(scene) {
 
     activeTargets.push(t);
 
-    let cd = (currentLevel.cooldown ?? 3) * 1000
+    const cd = (currentLevel.cooldown ?? 3) * 1000;
 
     scene.time.delayedCall(cd, () => {
         if (!gameOver && t.active) {
